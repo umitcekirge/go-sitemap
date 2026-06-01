@@ -1,0 +1,14 @@
+# Compiled binaries and test artifacts
+/go-sitemap
+*.test
+*.out
+*.prof
+
+# Example build outputs
+/examples/*/wordpress
+/examples/**/wp-sitemaps/
+/examples/**/public/
+/public/
+
+# Editor/OS noise
+.DS_Store
