@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 )
@@ -68,7 +69,7 @@ func TestIndexNowBatching(t *testing.T) {
 
 	urls := make([]string, 25)
 	for i := range urls {
-		urls[i] = "https://example.com/p/" + itoa(i)
+		urls[i] = "https://example.com/p/" + strconv.Itoa(i)
 	}
 	n := &IndexNowNotifier{Key: "k", Host: "example.com", Endpoint: srv.URL, Client: srv.Client(), BatchSize: 10, URLs: urls}
 	if err := n.Notify(context.Background(), nil); err != nil {

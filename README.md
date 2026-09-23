@@ -398,6 +398,8 @@ run, so crawlers never read an outdated index or part:
 - Set `KeepStaleFiles: true` to disable it.
 The optional `FileServer` serves files from a `MemoryOutput` with correct
 `Content-Type`/`Content-Encoding`/`Cache-Control`/`ETag` and conditional GET.
+It serves the last element of the request path, so it works under any mount
+prefix, and never serves dotfiles such as the manifest.
 
 ## Error handling
 

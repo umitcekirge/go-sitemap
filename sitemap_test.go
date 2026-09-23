@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +66,7 @@ type xmlIndex struct {
 func makeProvider(name string, n int) *SliceProvider {
 	entries := make([]Entry, 0, n)
 	for i := range n {
-		entries = append(entries, Entry{Loc: "https://example.com/p/" + itoa(i)})
+		entries = append(entries, Entry{Loc: "https://example.com/p/" + strconv.Itoa(i)})
 	}
 	return &SliceProvider{ProviderName: name, EntityKind: KindPage, Entries: entries}
 }
@@ -287,7 +288,7 @@ func TestContextCancellation(t *testing.T) {
 				if i == 3 {
 					cancel()
 				}
-				if err := yield(Entry{Loc: "https://example.com/p/" + itoa(i)}); err != nil {
+				if err := yield(Entry{Loc: "https://example.com/p/" + strconv.Itoa(i)}); err != nil {
 					return err
 				}
 				seen++

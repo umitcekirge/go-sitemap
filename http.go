@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,22 +22,36 @@ type FileServer struct {
 	Store *MemoryOutput
 	// MaxAge sets Cache-Control max-age. Zero -> 3600 seconds.
 	MaxAge int
-	// ModTime is reported as Last-Modified. Zero -> the server is created time
-	// is unknown, so Last-Modified is omitted.
+	// ModTime is reported as Last-Modified. Zero -> Last-Modified is omitted.
 	ModTime time.Time
+
+	mu    sync.Mutex
+	etags map[string]etagEntry
 }
 
-// ServeHTTP serves the file whose base name matches the request path. Gzip files
-// (".gz") are served with Content-Encoding: gzip and the underlying XML
-// Content-Type so clients transparently decompress them.
+// etagEntry caches a file's ETag. MemoryOutput stores a fresh copy on every
+// write, so the data pointer identifies the content version.
+type etagEntry struct {
+	data *byte
+	etag string
+}
+
+// ServeHTTP serves the file named by the last element of the request path, so
+// the server works under any mount prefix. Gzip files (".gz") are served with
+// Content-Encoding: gzip and the underlying XML Content-Type so clients
+// transparently decompress them.
 func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	name := strings.TrimPrefix(r.URL.Path, "/")
-	if err := validateName(name); err != nil {
+	if s.Store == nil {
+		http.Error(w, "sitemap store not configured", http.StatusInternalServerError)
+		return
+	}
+	name := path.Base(r.URL.Path)
+	if validateName(name) != nil || strings.HasPrefix(name, ".") {
 		http.NotFound(w, r)
 		return
 	}
@@ -52,11 +69,8 @@ func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if maxAge == 0 {
 		maxAge = 3600
 	}
-	w.Header().Set("Cache-Control", "public, max-age="+itoa(maxAge))
-
-	sum := sha256.Sum256(data)
-	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
-	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(maxAge))
+	w.Header().Set("ETag", s.etag(name, data))
 
 	// http.ServeContent handles conditional GET (If-None-Match,
 	// If-Modified-Since), Range requests and HEAD. An empty name is passed so it
@@ -64,25 +78,22 @@ func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", s.ModTime, bytes.NewReader(data))
 }
 
-// itoa is a tiny non-allocating-ish integer formatter for header values.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+// etag returns the cached ETag for data, hashing only when the file changed.
+func (s *FileServer) etag(name string, data []byte) string {
+	var ptr *byte
+	if len(data) > 0 {
+		ptr = &data[0]
 	}
-	neg := n < 0
-	if neg {
-		n = -n
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.etags[name]; ok && e.data == ptr {
+		return e.etag
 	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	if s.etags == nil {
+		s.etags = make(map[string]etagEntry)
 	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	s.etags[name] = etagEntry{data: ptr, etag: etag}
+	return etag
 }

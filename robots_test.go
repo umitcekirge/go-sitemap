@@ -2,6 +2,7 @@ package sitemap
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -69,7 +70,7 @@ func TestCustomFileNamer(t *testing.T) {
 type prefixNamer struct{}
 
 func (prefixNamer) SitemapName(prefix string, part int, gzip bool) string {
-	return "custom-" + prefix + "-" + itoa(part) + ".xml"
+	return "custom-" + prefix + "-" + strconv.Itoa(part) + ".xml"
 }
 func (prefixNamer) IndexName(base string, part int, multiple, gzip bool) string {
 	return "custom-" + base + ".xml"

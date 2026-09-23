@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -86,7 +87,7 @@ func TestStreamingLargeDataset(t *testing.T) {
 		ProviderName: "big", EntityKind: KindProduct,
 		StreamFunc: func(ctx context.Context, yield func(Entry) error) error {
 			for i := range n {
-				if err := yield(Entry{Loc: "https://example.com/p/" + itoa(i)}); err != nil {
+				if err := yield(Entry{Loc: "https://example.com/p/" + strconv.Itoa(i)}); err != nil {
 					return err
 				}
 			}
@@ -117,5 +118,30 @@ func TestNonStandardLimitsGeneration(t *testing.T) {
 	}
 	if len(res.Files) != 1 {
 		t.Fatalf("55000 urls should fit one non-standard file, got %d", len(res.Files))
+	}
+}
+
+func TestFileServerUnderPrefix(t *testing.T) {
+	g, mo := newGen(t, Options{})
+	res, _ := g.Generate(context.Background(), makeProvider("pages", 1))
+	_ = mo.Write(context.Background(), ".sitemap-index.manifest", []byte("x"))
+
+	mux := http.NewServeMux()
+	mux.Handle("/sitemaps/", &FileServer{Store: mo})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for path, want := range map[string]int{
+		"/sitemaps/" + res.Files[0].Name:    http.StatusOK,
+		"/sitemaps/.sitemap-index.manifest": http.StatusNotFound,
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
 	}
 }
