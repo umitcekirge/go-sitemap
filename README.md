@@ -208,8 +208,9 @@ must be absolute. Video and news extensions work the same way
 ## IndexNow (optional)
 
 IndexNow is the recommended **modern** programmatic notification. It is
-**disabled** unless you add a notifier. Submit the content URLs that actually
-changed (not the sitemap URLs):
+**disabled** unless you add a notifier. It submits the content URLs that
+actually changed, set in `URLs`; sitemap URLs are never submitted, and nothing
+is sent when `URLs` is empty:
 
 ```go
 notifier := &sitemap.IndexNowNotifier{

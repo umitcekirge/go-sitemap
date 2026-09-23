@@ -127,3 +127,33 @@ var errFake = errFakeType("boom")
 type errFakeType string
 
 func (e errFakeType) Error() string { return string(e) }
+
+func TestIndexNowSkipsWithoutURLs(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+	}))
+	defer srv.Close()
+	n := &IndexNowNotifier{Key: "k", Host: "example.com", Endpoint: srv.URL, Client: srv.Client()}
+	if err := n.Notify(context.Background(), []string{"https://example.com/sitemap-index.xml"}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("sitemap URLs must not be submitted to IndexNow")
+	}
+}
+
+func TestLegacyPingKeepsPercentEscapes(t *testing.T) {
+	var gotSrc string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSrc = r.URL.Query().Get("src")
+	}))
+	defer srv.Close()
+	n := &LegacyPingNotifier{Endpoints: []string{srv.URL + "/ping?src=a%2Fb&sitemap=%s"}, Client: srv.Client()}
+	if err := n.Notify(context.Background(), []string{"https://example.com/s.xml"}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if gotSrc != "a/b" {
+		t.Fatalf("src = %q, want a/b", gotSrc)
+	}
+}

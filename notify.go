@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,17 +47,17 @@ func (m *MultiNotifier) Name() string { return "multi" }
 
 // Notify implements Notifier, invoking each child and joining errors.
 func (m *MultiNotifier) Notify(ctx context.Context, sitemapURLs []string) error {
-	var msgs []string
+	var errs []error
 	for _, n := range m.Notifiers {
 		if n == nil {
 			continue
 		}
 		if err := n.Notify(ctx, sitemapURLs); err != nil {
-			msgs = append(msgs, fmt.Sprintf("%s: %v", n.Name(), err))
+			errs = append(errs, fmt.Errorf("%s: %w", n.Name(), err))
 		}
 	}
-	if len(msgs) > 0 {
-		return newErr(ErrNotify, "notify", strings.Join(msgs, "; "))
+	if len(errs) > 0 {
+		return newErr(ErrNotify, "notify", "one or more notifiers failed").wrap(errors.Join(errs...))
 	}
 	return nil
 }
@@ -78,8 +80,8 @@ type IndexNowNotifier struct {
 	BatchSize int
 	// Client is the HTTP client. Zero value -> a client with a 30s timeout.
 	Client httpDoer
-	// URLs, when set, is submitted instead of the generated sitemap URLs. Set
-	// this to the list of content URLs that actually changed (recommended).
+	// URLs are the changed page URLs to submit. IndexNow expects page URLs,
+	// not sitemap URLs, so nothing is sent when URLs is empty.
 	URLs []string
 }
 
@@ -94,16 +96,13 @@ type indexNowPayload struct {
 	URLList     []string `json:"urlList"`
 }
 
-// Notify implements Notifier. When URLs is set those are submitted; otherwise
-// the provided sitemap URLs are used as a fallback.
-func (n *IndexNowNotifier) Notify(ctx context.Context, sitemapURLs []string) error {
+// Notify implements Notifier by submitting n.URLs. The sitemap URLs are
+// ignored.
+func (n *IndexNowNotifier) Notify(ctx context.Context, _ []string) error {
 	if n.Key == "" || n.Host == "" {
 		return newErr(ErrNotify, "indexnow", "Key and Host are required")
 	}
 	urls := n.URLs
-	if len(urls) == 0 {
-		urls = sitemapURLs
-	}
 	if len(urls) == 0 {
 		return nil
 	}
@@ -142,11 +141,8 @@ func (n *IndexNowNotifier) Notify(ctx context.Context, sitemapURLs []string) err
 		if err != nil {
 			return newErr(ErrNotify, "indexnow", "request failed").wrap(err)
 		}
-		// Drain and close so connections can be reused.
-		_ = resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return newErr(ErrNotify, "indexnow",
-				fmt.Sprintf("endpoint returned status %d", resp.StatusCode))
+		if err := checkResponse(resp); err != nil {
+			return newErr(ErrNotify, "indexnow", err.Error())
 		}
 	}
 	return nil
@@ -154,12 +150,12 @@ func (n *IndexNowNotifier) Notify(ctx context.Context, sitemapURLs []string) err
 
 // LegacyPingNotifier performs the deprecated GET "ping" against explicitly
 // configured endpoints. It is OFF by default and MUST NOT be used to notify
-// Google: Google removed its ping endpoint. Each Endpoint must contain a
-// "%s" placeholder for the URL-encoded sitemap URL, e.g.
+// Google: Google removed its ping endpoint. Each Endpoint must contain one
+// "%s" placeholder, replaced by the URL-encoded sitemap URL, e.g.
 // "https://www.bing.com/ping?sitemap=%s". Provided only for compatibility with
 // niche consumers that still support it.
 type LegacyPingNotifier struct {
-	// Endpoints are printf templates with a single %s for the encoded URL.
+	// Endpoints are URL templates; the first "%s" is replaced by the encoded URL.
 	Endpoints []string
 	// Client is the HTTP client. Zero value -> a client with a 30s timeout.
 	Client httpDoer
@@ -183,7 +179,7 @@ func (n *LegacyPingNotifier) Notify(ctx context.Context, sitemapURLs []string) e
 				fmt.Sprintf("endpoint %q must contain a %%s placeholder", tmpl))
 		}
 		for _, su := range sitemapURLs {
-			target := fmt.Sprintf(tmpl, url.QueryEscape(su))
+			target := strings.Replace(tmpl, "%s", url.QueryEscape(su), 1)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 			if err != nil {
 				return newErr(ErrNotify, "legacy-ping", "could not build request").wrap(err)
@@ -192,12 +188,21 @@ func (n *LegacyPingNotifier) Notify(ctx context.Context, sitemapURLs []string) e
 			if err != nil {
 				return newErr(ErrNotify, "legacy-ping", "request failed").wrap(err)
 			}
-			_ = resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				return newErr(ErrNotify, "legacy-ping",
-					fmt.Sprintf("endpoint returned status %d", resp.StatusCode))
+			if err := checkResponse(resp); err != nil {
+				return newErr(ErrNotify, "legacy-ping", err.Error())
 			}
 		}
+	}
+	return nil
+}
+
+// checkResponse drains and closes resp so the connection can be reused, and
+// reports a non-2xx status.
+func checkResponse(resp *http.Response) error {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("endpoint returned status %d", resp.StatusCode)
 	}
 	return nil
 }
