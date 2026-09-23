@@ -239,3 +239,18 @@ func TestSwallowedYieldErrorStillFails(t *testing.T) {
 		t.Fatalf("want ErrInvalidURL, got %v", err)
 	}
 }
+
+func TestOversizedEntryDoesNotSplitEarly(t *testing.T) {
+	big := Entry{Loc: "https://example.com/big?" + strings.Repeat("x", 2000)}
+	p := &SliceProvider{ProviderName: "pages", Entries: []Entry{
+		{Loc: "https://example.com/a"}, big, {Loc: "https://example.com/b"},
+	}}
+	g, _ := newGen(t, Options{MaxUncompressedBytes: minUncompressedBytes, Validation: ModeLenient})
+	res, err := g.Generate(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Files) != 1 || res.Files[0].URLCount != 2 {
+		t.Fatalf("want one file with 2 urls, got %+v", res.Files)
+	}
+}

@@ -329,6 +329,13 @@ func (s *splitter) add(e Entry) error {
 	fragLen := s.scratch.Len()
 	entryNS := entryNamespaces(e)
 
+	// Reject before flushing, so an oversized entry does not end the current
+	// file early.
+	if int64(s.headerLenFor(entryNS))+int64(fragLen)+int64(s.footerLen) > s.maxBytes {
+		return locErr(ErrEntryTooLarge, "Loc", e.Loc,
+			"entry alone exceeds the per-file uncompressed byte limit")
+	}
+
 	if s.count > 0 {
 		combined := s.ns | entryNS
 		projected := int64(s.headerLenFor(combined)) + int64(s.body.Len()) + int64(fragLen) + int64(s.footerLen)
@@ -336,14 +343,6 @@ func (s *splitter) add(e Entry) error {
 			if err := s.flush(); err != nil {
 				return err
 			}
-		}
-	}
-
-	if s.count == 0 {
-		single := int64(s.headerLenFor(entryNS)) + int64(fragLen) + int64(s.footerLen)
-		if single > s.maxBytes {
-			return locErr(ErrEntryTooLarge, "Loc", e.Loc,
-				"entry alone exceeds the per-file uncompressed byte limit")
 		}
 	}
 
