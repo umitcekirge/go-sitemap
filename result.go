@@ -45,6 +45,19 @@ func (r *Result) IndexURLs() []string {
 	return urls
 }
 
+// fileNames lists the generated files in publish order: sitemaps first, then
+// the index files that reference them.
+func (r *Result) fileNames() []string {
+	names := make([]string, 0, len(r.Files)+len(r.IndexFiles))
+	for _, f := range r.Files {
+		names = append(names, f.Name)
+	}
+	for _, f := range r.IndexFiles {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
 // FileStat describes one generated file (sitemap or index).
 type FileStat struct {
 	// Name is the base file name.

@@ -124,7 +124,7 @@ func (m *MemoryOutput) Names() []string {
 
 // FileOutput writes files to a directory on the local filesystem. Writes are
 // atomic (temp file + rename) and confined to Dir; unsafe names are rejected.
-// It implements Pruner.
+// It implements Pruner and Stager.
 type FileOutput struct {
 	// Dir is the destination directory. It is created if missing.
 	Dir string

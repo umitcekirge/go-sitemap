@@ -42,7 +42,8 @@ func (g *Generator) Options() Options { return g.opts }
 
 // Generate renders the given providers, writes the resulting files and index
 // via the configured Output, optionally notifies, and returns a detailed
-// Result. Generation stops promptly when ctx is cancelled.
+// Result. Generation stops promptly when ctx is cancelled. When Output
+// implements Stager, files are published only after the whole run succeeded.
 //
 // In ModeStrict the first invalid entry aborts generation with a typed error.
 // In ModeLenient/ModeCollect invalid entries are skipped and recorded in
@@ -57,16 +58,26 @@ func (g *Generator) Generate(ctx context.Context, providers ...Provider) (*Resul
 
 	r := &renderer{pretty: g.opts.PrettyXML, lastModFormat: g.opts.LastModFormat}
 
-	for _, p := range providers {
-		if err := ctx.Err(); err != nil {
+	out := g.opts.Output
+	if st, ok := out.(Stager); ok && !g.opts.DryRun {
+		stage, err := st.Stage(ctx)
+		if err != nil {
+			return nil, newErr(ErrOutput, "stage", "could not start staging").wrap(err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = stage.Abort()
+			}
+		}()
+		if err := g.render(ctx, r, stage, providers, res); err != nil {
 			return nil, err
 		}
-		if err := g.runProvider(ctx, r, p, res); err != nil {
-			return nil, err
+		if err := stage.Commit(ctx, res.fileNames()); err != nil {
+			return nil, newErr(ErrOutput, "commit", "could not publish staged files").wrap(err)
 		}
-	}
-
-	if err := g.generateIndex(ctx, r, res); err != nil {
+		committed = true
+	} else if err := g.render(ctx, r, out, providers, res); err != nil {
 		return nil, err
 	}
 
@@ -81,6 +92,19 @@ func (g *Generator) Generate(ctx context.Context, providers ...Provider) (*Resul
 
 	res.Duration = g.opts.Clock().Sub(start)
 	return res, nil
+}
+
+// render writes every sitemap and index file of the run to out.
+func (g *Generator) render(ctx context.Context, r *renderer, out Output, providers []Provider, res *Result) error {
+	for _, p := range providers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := g.runProvider(ctx, r, out, p, res); err != nil {
+			return err
+		}
+	}
+	return g.generateIndex(ctx, r, out, res)
 }
 
 // validateProviders rejects nil providers, empty names, and prefix collisions
@@ -106,7 +130,7 @@ func (g *Generator) validateProviders(providers []Provider) error {
 
 // runProvider streams one provider through validation, transforms, splitting
 // and output, updating res.
-func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, res *Result) error {
+func (g *Generator) runProvider(ctx context.Context, r *renderer, out Output, p Provider, res *Result) error {
 	prefix := providerPrefix(p)
 	pstat := ProviderStat{Name: p.Name(), Kind: p.Kind()}
 	part := 0
@@ -124,7 +148,7 @@ func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, re
 			UncompressedSize: int64(len(doc)),
 			Gzipped:          g.opts.Gzip,
 		}
-		if err := g.writeFile(ctx, name, doc, &fs); err != nil {
+		if err := g.writeFile(ctx, out, name, doc, &fs); err != nil {
 			return err
 		}
 		res.Files = append(res.Files, fs)
@@ -203,23 +227,23 @@ func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, re
 
 // writeFile gzips (if enabled) and writes doc, updating fs sizes. On DryRun no
 // bytes are written but sizes are still recorded.
-func (g *Generator) writeFile(ctx context.Context, name string, doc []byte, fs *FileStat) error {
+func (g *Generator) writeFile(ctx context.Context, out Output, name string, doc []byte, fs *FileStat) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
-	out := doc
+	data := doc
 	if g.opts.Gzip {
 		gz, err := gzipBytes(doc)
 		if err != nil {
 			return err
 		}
 		fs.CompressedSize = int64(len(gz))
-		out = gz
+		data = gz
 	}
 	if g.opts.DryRun {
 		return nil
 	}
-	if err := g.opts.Output.Write(ctx, name, out); err != nil {
+	if err := out.Write(ctx, name, data); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
@@ -264,7 +288,7 @@ func (g *Generator) handleInvalid(res *Result, pstat *ProviderStat, provider, lo
 
 // generateIndex writes the sitemap index file(s) when required by the options
 // and the number of sitemap files produced.
-func (g *Generator) generateIndex(ctx context.Context, r *renderer, res *Result) error {
+func (g *Generator) generateIndex(ctx context.Context, r *renderer, out Output, res *Result) error {
 	total := len(res.Files)
 	if total == 0 || (total == 1 && !g.opts.AlwaysIndex) {
 		return nil
@@ -298,7 +322,7 @@ func (g *Generator) generateIndex(ctx context.Context, r *renderer, res *Result)
 			Gzipped:          g.opts.Gzip,
 			IsIndex:          true,
 		}
-		if err := g.writeFile(ctx, name, doc, &fs); err != nil {
+		if err := g.writeFile(ctx, out, name, doc, &fs); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}

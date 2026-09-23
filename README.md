@@ -370,11 +370,27 @@ type Output interface {
 Built in:
 
 - `FileOutput` — atomic writes (temp file + rename) confined to a directory;
-  rejects path traversal and unsafe names. Supports stale-file cleanup.
+  rejects path traversal and unsafe names. Supports staging and cleanup.
 - `MemoryOutput` — in-memory store for tests and inspection (`Get`, `Names`).
 
 Custom backends (S3, GCS, HTTP upload) implement the one-method interface and
 live in your own code or separate modules, keeping the core dependency-free.
+
+### Failed runs leave the published set untouched
+
+Files are written to a staging area first and published only after the whole
+run, index included, has succeeded: sitemaps first, then the index that
+references them. If a provider fails halfway (say, the database connection
+drops), the staging area is discarded and crawlers keep reading the previous,
+consistent set.
+
+- `FileOutput` stages in a hidden `.staging-*` directory inside `Dir` and
+  publishes with a same-filesystem rename per file. Staging directories left
+  behind by a crashed process are removed once they are 24 hours old.
+- `MemoryOutput` swaps all files in under one lock, so `FileServer` never
+  serves a mixed set.
+- Custom outputs opt in by implementing the optional `Stager` interface;
+  others are written directly, as before.
 
 ### Stale-file cleanup
 
