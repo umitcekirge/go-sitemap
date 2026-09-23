@@ -205,3 +205,37 @@ func TestInvalidUTF8TextRejected(t *testing.T) {
 		t.Fatalf("want ErrInvalidEntry on Image.Title, got %v", err)
 	}
 }
+
+// failOnce fails only the first write, so a later flush cannot mask a
+// swallowed error.
+type failOnce struct{ failed bool }
+
+func (f *failOnce) Write(context.Context, string, []byte) error {
+	if f.failed {
+		return nil
+	}
+	f.failed = true
+	return errors.New("disk full")
+}
+
+func TestSwallowedYieldErrorStillFails(t *testing.T) {
+	swallow := func(entries ...Entry) *FuncProvider {
+		return &FuncProvider{ProviderName: "pages", StreamFunc: func(_ context.Context, yield func(Entry) error) error {
+			for _, e := range entries {
+				_ = yield(e)
+			}
+			return nil
+		}}
+	}
+
+	g, _ := newGen(t, Options{Output: &failOnce{}, MaxURLsPerSitemap: 1})
+	ok := Entry{Loc: "https://example.com/a"}
+	if _, err := g.Generate(context.Background(), swallow(ok, ok, ok)); !errors.Is(err, ErrOutput) {
+		t.Fatalf("want ErrOutput, got %v", err)
+	}
+
+	gs, _ := newGen(t, Options{})
+	if _, err := gs.Generate(context.Background(), swallow(Entry{Loc: "bad"}, ok)); !errors.Is(err, ErrInvalidURL) {
+		t.Fatalf("want ErrInvalidURL, got %v", err)
+	}
+}

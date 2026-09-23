@@ -129,7 +129,7 @@ func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, re
 
 	sp := newSplitter(r, g.opts.MaxURLsPerSitemap, g.opts.MaxUncompressedBytes, sink)
 
-	yield := func(e Entry) error {
+	handle := func(e Entry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -167,8 +167,22 @@ func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, re
 		return nil
 	}
 
-	if err := p.Stream(ctx, yield); err != nil {
-		return classifyStreamErr(p.Name(), err)
+	// A stop error is sticky and wins over whatever Stream returns, so a
+	// provider that swallows it cannot turn a failed run into a success.
+	var stopErr error
+	yield := func(e Entry) error {
+		if stopErr == nil {
+			stopErr = handle(e)
+		}
+		return stopErr
+	}
+
+	streamErr := p.Stream(ctx, yield)
+	if stopErr != nil {
+		return stopErr
+	}
+	if streamErr != nil {
+		return classifyStreamErr(p.Name(), streamErr)
 	}
 	if err := sp.flush(); err != nil {
 		return err
