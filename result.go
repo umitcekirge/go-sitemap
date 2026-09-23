@@ -26,6 +26,12 @@ type Result struct {
 	// Notifications holds the outcome of each configured notifier (empty when
 	// none configured or on DryRun).
 	Notifications []NotifyResult
+	// PrunedFiles lists the stale files removed after generation (on DryRun,
+	// the files that would be removed).
+	PrunedFiles []string
+	// PruneErr reports a stale-file cleanup failure. Like notification
+	// errors, it does not fail generation.
+	PruneErr error
 	// DryRun reports whether files were simulated rather than written.
 	DryRun bool
 }

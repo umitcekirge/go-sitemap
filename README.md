@@ -250,6 +250,7 @@ All behaviour is configured through the `Options` struct. Highlights:
 | Gzip | `Gzip` |
 | Split limits | `MaxURLsPerSitemap`, `MaxUncompressedBytes`, `AllowNonStandardLimits` |
 | Index | `AlwaysIndex`, `IndexBaseName`, `IndexLastMod` |
+| Stale-file cleanup | `KeepStaleFiles` |
 | Validation | `Validation`, `SameHostOnly` |
 | Output formatting | `PrettyXML`, `LastModFormat` |
 | Opt-in defaults | `DefaultChangeFreq`, `DefaultPriority` |
@@ -281,6 +282,7 @@ All behaviour is configured through the `Options` struct. Highlights:
 | File naming | provider-based, zero-padded | `sitemap-<prefix>-0001.xml` |
 | Context cancellation | always supported | |
 | `Output` | required | `FileOutput`, `MemoryOutput` or custom; optional on `DryRun` |
+| Stale-file cleanup | enabled | disable with `KeepStaleFiles: true` |
 
 Zero-value options are normalised to these defaults. Invalid explicit values
 return a wrapped `ErrInvalidOptions` from `New`.
@@ -368,11 +370,32 @@ type Output interface {
 Built in:
 
 - `FileOutput` — atomic writes (temp file + rename) confined to a directory;
-  rejects path traversal and unsafe names.
+  rejects path traversal and unsafe names. Supports stale-file cleanup.
 - `MemoryOutput` — in-memory store for tests and inspection (`Get`, `Names`).
 
 Custom backends (S3, GCS, HTTP upload) implement the one-method interface and
 live in your own code or separate modules, keeping the core dependency-free.
+
+### Stale-file cleanup
+
+When a site shrinks, a run produces fewer files than the last one (or no index
+at all). By default the generator removes those leftovers after a successful
+run, so crawlers never read an outdated index or part:
+
+- It records the files it wrote in a manifest (`.sitemap-index.manifest`, i.e.
+  `"." + IndexBaseName + ".manifest"`) and only ever removes files listed there;
+  other files in the directory are never touched. The first run after upgrading
+  has no manifest, so it removes nothing.
+- It requires the output to implement the optional `Pruner` interface
+  (`Read` + `Remove`); `FileOutput` and `MemoryOutput` do, other outputs are
+  skipped.
+- Removed files are listed in `Result.PrunedFiles` (on `DryRun`: the files that
+  would be removed). A cleanup failure is reported in `Result.PruneErr` and does
+  not fail generation; failed removals are retried on the next run.
+- Generators that share one output directory must use distinct
+  `IndexBaseName` values; otherwise they share a manifest and index name and
+  remove each other's files.
+- Set `KeepStaleFiles: true` to disable it.
 The optional `FileServer` serves files from a `MemoryOutput` with correct
 `Content-Type`/`Content-Encoding`/`Cache-Control`/`ETag` and conditional GET.
 
@@ -400,7 +423,7 @@ The package never panics for bad input.
 
 `Generate` returns a `*Result` with: `Files`, `IndexFiles`, `Providers`,
 `TotalURLs`, `WrittenURLs`, `SkippedURLs`, `ValidationErrors`, `Duration`,
-`Notifications`. Each `FileStat` carries name, public URL, provider, part
+`Notifications`, `PrunedFiles`, `PruneErr`. Each `FileStat` carries name, public URL, provider, part
 number, URL count, uncompressed/compressed sizes and gzip flag. Each
 `ProviderStat` aggregates file/URL/skip/error counts and bytes.
 

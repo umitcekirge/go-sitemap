@@ -2,7 +2,9 @@ package sitemap
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +26,16 @@ type Output interface {
 	// finish using data before returning, and must treat name as a base file
 	// name without directory separators.
 	Write(ctx context.Context, name string, data []byte) error
+}
+
+// Pruner is an optional Output extension. When Output implements it, the
+// generator removes files left over from its previous run; see
+// Options.KeepStaleFiles.
+type Pruner interface {
+	// Read returns the contents of name, or an error wrapping fs.ErrNotExist.
+	Read(ctx context.Context, name string) ([]byte, error)
+	// Remove deletes name. Removing a missing file is not an error.
+	Remove(ctx context.Context, name string) error
 }
 
 // validateName rejects unsafe file names (path traversal, separators, absolute
@@ -75,6 +87,29 @@ func (m *MemoryOutput) Get(name string) ([]byte, bool) {
 	return b, ok
 }
 
+// Read implements Pruner.
+func (m *MemoryOutput) Read(ctx context.Context, name string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b, ok := m.Get(name)
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return b, nil
+}
+
+// Remove implements Pruner.
+func (m *MemoryOutput) Remove(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.files, name)
+	m.mu.Unlock()
+	return nil
+}
+
 // Names returns the sorted list of written file names.
 func (m *MemoryOutput) Names() []string {
 	m.mu.Lock()
@@ -89,6 +124,7 @@ func (m *MemoryOutput) Names() []string {
 
 // FileOutput writes files to a directory on the local filesystem. Writes are
 // atomic (temp file + rename) and confined to Dir; unsafe names are rejected.
+// It implements Pruner.
 type FileOutput struct {
 	// Dir is the destination directory. It is created if missing.
 	Dir string
@@ -97,10 +133,8 @@ type FileOutput struct {
 	// DirMode is the permission used when creating Dir. Zero -> 0o755.
 	DirMode os.FileMode
 
-	once    sync.Once
-	mkErr   error
-	absDir  string
-	initErr error
+	mu     sync.Mutex
+	absDir string
 }
 
 // NewFileOutput returns a FileOutput writing into dir.
@@ -108,18 +142,43 @@ func NewFileOutput(dir string) *FileOutput {
 	return &FileOutput{Dir: dir}
 }
 
-func (f *FileOutput) init() {
+// dir resolves and creates the output directory. Failures are not cached, so a
+// later call can succeed once the cause is fixed.
+func (f *FileOutput) dir() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.absDir != "" {
+		return f.absDir, nil
+	}
+	abs, err := filepath.Abs(f.Dir)
+	if err != nil {
+		return "", newErr(ErrOutput, "output", "could not resolve output directory").wrap(err)
+	}
 	dirMode := f.DirMode
 	if dirMode == 0 {
 		dirMode = 0o755
 	}
-	abs, err := filepath.Abs(f.Dir)
-	if err != nil {
-		f.initErr = err
-		return
+	if err := os.MkdirAll(abs, dirMode); err != nil {
+		return "", newErr(ErrOutput, "output", "could not create output directory").wrap(err)
 	}
 	f.absDir = abs
-	f.mkErr = os.MkdirAll(abs, dirMode)
+	return abs, nil
+}
+
+// path validates name and returns its absolute path inside the output directory.
+func (f *FileOutput) path(name string) (string, error) {
+	if err := validateName(name); err != nil {
+		return "", err
+	}
+	dir, err := f.dir()
+	if err != nil {
+		return "", err
+	}
+	final := filepath.Join(dir, name)
+	if !withinDir(dir, final) {
+		return "", newErr(ErrOutput, "output", fmt.Sprintf("refusing path outside output directory: %q", name))
+	}
+	return final, nil
 }
 
 // Write implements Output atomically and safely.
@@ -127,21 +186,9 @@ func (f *FileOutput) Write(ctx context.Context, name string, data []byte) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateName(name); err != nil {
+	final, err := f.path(name)
+	if err != nil {
 		return err
-	}
-	f.once.Do(f.init)
-	if f.initErr != nil {
-		return newErr(ErrOutput, "output", "could not resolve output directory").wrap(f.initErr)
-	}
-	if f.mkErr != nil {
-		return newErr(ErrOutput, "output", "could not create output directory").wrap(f.mkErr)
-	}
-
-	final := filepath.Join(f.absDir, name)
-	// Defence in depth: the resolved path must remain within absDir.
-	if !withinDir(f.absDir, final) {
-		return newErr(ErrOutput, "output", fmt.Sprintf("refusing to write outside output directory: %q", name))
 	}
 
 	fileMode := f.FileMode
@@ -149,7 +196,7 @@ func (f *FileOutput) Write(ctx context.Context, name string, data []byte) error 
 		fileMode = 0o644
 	}
 
-	tmp, err := os.CreateTemp(f.absDir, "."+name+".tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(final), "."+name+".tmp-*")
 	if err != nil {
 		return newErr(ErrOutput, "output", "could not create temp file").wrap(err)
 	}
@@ -173,6 +220,37 @@ func (f *FileOutput) Write(ctx context.Context, name string, data []byte) error 
 	if err := os.Rename(tmpName, final); err != nil {
 		cleanup()
 		return newErr(ErrOutput, "output", "could not rename temp file into place").wrap(err)
+	}
+	return nil
+}
+
+// Read implements Pruner.
+func (f *FileOutput) Read(ctx context.Context, name string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p, err := f.path(name)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, newErr(ErrOutput, "output", fmt.Sprintf("could not read %q", name)).wrap(err)
+	}
+	return b, nil
+}
+
+// Remove implements Pruner.
+func (f *FileOutput) Remove(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p, err := f.path(name)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return newErr(ErrOutput, "output", fmt.Sprintf("could not remove %q", name)).wrap(err)
 	}
 	return nil
 }

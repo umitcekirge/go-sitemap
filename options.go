@@ -150,6 +150,14 @@ type Options struct {
 	// with the strict lastmod policy for page entries.
 	IndexLastMod bool
 
+	// KeepStaleFiles disables stale-file cleanup. By default, when Output
+	// implements Pruner (FileOutput and MemoryOutput do), a successful run
+	// removes the files its previous run wrote but this one did not. Written
+	// files are tracked in a manifest ("." + IndexBaseName + ".manifest"), so
+	// files the generator did not create are never touched. Generators sharing
+	// an output need distinct IndexBaseName values.
+	KeepStaleFiles bool
+
 	// DryRun validates and simulates generation (counting entries, splitting,
 	// file names and sizes) without writing files or sending notifications.
 	DryRun bool

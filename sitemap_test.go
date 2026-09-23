@@ -311,7 +311,7 @@ func TestMultipleProvidersGrouping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := []string{"sitemap-categories-0001.xml", "sitemap-index.xml", "sitemap-products-0001.xml"}
+	want := []string{".sitemap-index.manifest", "sitemap-categories-0001.xml", "sitemap-index.xml", "sitemap-products-0001.xml"}
 	got := mo.Names()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("names = %v, want %v", got, want)

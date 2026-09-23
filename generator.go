@@ -70,6 +70,13 @@ func (g *Generator) Generate(ctx context.Context, providers ...Provider) (*Resul
 		return nil, err
 	}
 
+	if err := g.prune(ctx, res); err != nil {
+		res.PruneErr = err
+		if g.opts.Logger != nil {
+			g.opts.Logger.Printf("sitemap: stale file cleanup failed: %v", err)
+		}
+	}
+
 	g.notify(ctx, res)
 
 	res.Duration = g.opts.Clock().Sub(start)

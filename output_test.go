@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ func TestFileOutput(t *testing.T) {
 	// No stray temp files should remain.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".tmp" || len(e.Name()) > 0 && e.Name()[0] == '.' {
+		if strings.Contains(e.Name(), ".tmp-") {
 			t.Fatalf("stray temp file left behind: %q", e.Name())
 		}
 	}
