@@ -369,28 +369,6 @@ func TestAlwaysIndexSingleFile(t *testing.T) {
 	}
 }
 
-func TestDisableIndexSingleFile(t *testing.T) {
-	g, _ := newGen(t, Options{DisableIndex: true})
-	res, err := g.Generate(context.Background(), makeProvider("pages", 1))
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if len(res.IndexFiles) != 0 {
-		t.Fatalf("DisableIndex with one file should produce no index")
-	}
-}
-
-func TestDisableIndexIgnoredWhenMultiFile(t *testing.T) {
-	g, _ := newGen(t, Options{DisableIndex: true, MaxURLsPerSitemap: 1})
-	res, err := g.Generate(context.Background(), makeProvider("pages", 3))
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if len(res.IndexFiles) != 1 {
-		t.Fatalf("DisableIndex must be ignored when multiple files exist (got %d)", len(res.IndexFiles))
-	}
-}
-
 func TestIndexURLsAbsolute(t *testing.T) {
 	g, mo := newGen(t, Options{MaxURLsPerSitemap: 1, BaseURL: "https://cdn.example.com/maps"})
 	res, err := g.Generate(context.Background(), makeProvider("pages", 2))
@@ -447,7 +425,7 @@ func TestIndexSplitsByByteSize(t *testing.T) {
 
 func TestInvalidIndexBaseName(t *testing.T) {
 	for _, bad := range []string{"../evil", "sub/dir", `a\b`} {
-		if _, err := New(Options{BaseURL: "https://e.com", IndexBaseName: bad}); !errors.Is(err, ErrInvalidOptions) {
+		if _, err := New(Options{BaseURL: "https://e.com", Output: NewMemoryOutput(), IndexBaseName: bad}); !errors.Is(err, ErrInvalidOptions) {
 			t.Fatalf("IndexBaseName %q should be rejected, got %v", bad, err)
 		}
 	}

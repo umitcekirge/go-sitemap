@@ -13,7 +13,7 @@ import (
 func ptrFloat(f float64) *float64 { return &f }
 
 func TestDefaultsNormalized(t *testing.T) {
-	g, err := New(Options{BaseURL: "https://example.com"})
+	g, err := New(Options{BaseURL: "https://example.com", Output: NewMemoryOutput()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -33,8 +33,8 @@ func TestDefaultsNormalized(t *testing.T) {
 	if o.IndexBaseName != "sitemap-index" {
 		t.Errorf("IndexBaseName default = %q", o.IndexBaseName)
 	}
-	if o.FileNamer == nil || o.Output == nil || o.Clock == nil {
-		t.Errorf("namer/output/clock should default")
+	if o.FileNamer == nil || o.Clock == nil {
+		t.Errorf("namer/clock should default")
 	}
 	if o.PublicURLPrefix != "https://example.com/" {
 		t.Errorf("PublicURLPrefix should fall back to BaseURL with trailing slash, got %q", o.PublicURLPrefix)
@@ -46,7 +46,8 @@ func TestInvalidOptions(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"no base url", Options{}},
+		{"no base url", Options{Output: NewMemoryOutput()}},
+		{"no output", Options{BaseURL: "https://e.com"}},
 		{"bad base url", Options{BaseURL: "not-a-url"}},
 		{"ftp scheme", Options{BaseURL: "ftp://example.com"}},
 		{"max urls negative", Options{BaseURL: "https://e.com", MaxURLsPerSitemap: -1}},
@@ -70,6 +71,7 @@ func TestInvalidOptions(t *testing.T) {
 func TestNonStandardLimitsAllowed(t *testing.T) {
 	_, err := New(Options{
 		BaseURL:                "https://e.com",
+		Output:                 NewMemoryOutput(),
 		MaxURLsPerSitemap:      ProtocolMaxURLs + 10,
 		MaxUncompressedBytes:   ProtocolMaxBytes + 10,
 		AllowNonStandardLimits: true,
@@ -238,6 +240,29 @@ func TestSwallowedYieldErrorStillFails(t *testing.T) {
 	if _, err := gs.Generate(context.Background(), swallow(Entry{Loc: "bad"}, ok)); !errors.Is(err, ErrInvalidURL) {
 		t.Fatalf("want ErrInvalidURL, got %v", err)
 	}
+}
+
+type unsafeNamer struct{ DefaultFileNamer }
+
+func (unsafeNamer) SitemapName(string, int, bool) string { return "../evil.xml" }
+
+func TestUnsafeCustomNameRejected(t *testing.T) {
+	var got []string
+	rec := &recordingOutput{names: &got}
+	g, _ := newGen(t, Options{Output: rec, FileNamer: unsafeNamer{}})
+	if _, err := g.Generate(context.Background(), makeProvider("pages", 1)); !errors.Is(err, ErrOutput) {
+		t.Fatalf("want ErrOutput, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("unsafe name reached the output: %v", got)
+	}
+}
+
+type recordingOutput struct{ names *[]string }
+
+func (r *recordingOutput) Write(_ context.Context, name string, _ []byte) error {
+	*r.names = append(*r.names, name)
+	return nil
 }
 
 func TestOversizedEntryDoesNotSplitEarly(t *testing.T) {

@@ -197,6 +197,9 @@ func (g *Generator) runProvider(ctx context.Context, r *renderer, p Provider, re
 // writeFile gzips (if enabled) and writes doc, updating fs sizes. On DryRun no
 // bytes are written but sizes are still recorded.
 func (g *Generator) writeFile(ctx context.Context, name string, doc []byte, fs *FileStat) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
 	out := doc
 	if g.opts.Gzip {
 		gz, err := gzipBytes(doc)
@@ -256,11 +259,7 @@ func (g *Generator) handleInvalid(res *Result, pstat *ProviderStat, provider, lo
 // and the number of sitemap files produced.
 func (g *Generator) generateIndex(ctx context.Context, r *renderer, res *Result) error {
 	total := len(res.Files)
-	generate := total > 1 || (g.opts.AlwaysIndex && total >= 1)
-	if g.opts.DisableIndex && total <= 1 {
-		generate = false
-	}
-	if !generate {
+	if total == 0 || (total == 1 && !g.opts.AlwaysIndex) {
 		return nil
 	}
 

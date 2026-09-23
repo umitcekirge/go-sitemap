@@ -61,9 +61,9 @@ type Logger interface {
 	Printf(format string, args ...any)
 }
 
-// Options configures a Generator. The zero value is valid: every field is
-// normalised to a protocol-safe default by New. Invalid explicit values return
-// ErrInvalidOptions.
+// Options configures a Generator. BaseURL (or PublicURLPrefix) and Output are
+// required; every other field is normalised to a protocol-safe default by New.
+// Invalid explicit values return ErrInvalidOptions.
 type Options struct {
 	// PublicURLPrefix is prepended to generated file names to form the public
 	// URL of each sitemap (and of each entry in the index). It should be an
@@ -75,9 +75,8 @@ type Options struct {
 	// PublicURLPrefix is empty (files are then served from the site root).
 	BaseURL string
 
-	// Output is the storage backend. Defaults to an in-memory output if nil so
-	// that New never fails for lack of a backend; production code should set a
-	// FileOutput or custom Output.
+	// Output is the storage backend, e.g. NewFileOutput or NewMemoryOutput.
+	// Required unless DryRun is set.
 	Output Output
 
 	// Gzip enables gzip compression of generated files (".xml.gz"). Default
@@ -101,11 +100,6 @@ type Options struct {
 
 	// AlwaysIndex forces an index file even when only one sitemap is produced.
 	AlwaysIndex bool
-
-	// DisableIndex suppresses index generation. It is honoured only when at
-	// most one sitemap file is produced (a multi-file set requires an index to
-	// be discoverable); otherwise New/Generate ignore it for protocol safety.
-	DisableIndex bool
 
 	// IndexBaseName is the base name of the index file ("sitemap-index" or
 	// "sitemap"). Zero value -> "sitemap-index".
@@ -232,8 +226,8 @@ func (o Options) normalize() (Options, error) {
 	if n.FileNamer == nil {
 		n.FileNamer = DefaultFileNamer{}
 	}
-	if n.Output == nil {
-		n.Output = NewMemoryOutput()
+	if n.Output == nil && !n.DryRun {
+		return n, newErr(ErrInvalidOptions, "options", "Output is required (e.g. NewFileOutput or NewMemoryOutput)")
 	}
 	if n.Clock == nil {
 		n.Clock = time.Now

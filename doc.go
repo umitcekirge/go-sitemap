@@ -21,10 +21,10 @@
 //
 // # Defaults
 //
-// The zero value of Options is usable: missing fields are normalised to
-// protocol-safe defaults (50,000 URLs and 50 MB uncompressed per file, strict
-// validation, automatic index, gzip disabled). Invalid options return a typed
-// error from New. See Options for the full list of defaults.
+// Only BaseURL (or PublicURLPrefix) and Output are required; other fields are
+// normalised to protocol-safe defaults (50,000 URLs and 50 MB uncompressed per
+// file, strict validation, automatic index, gzip disabled). Invalid options
+// return a typed error from New. See Options for the full list of defaults.
 //
 // # Streaming and memory
 //

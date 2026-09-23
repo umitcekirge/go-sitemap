@@ -26,9 +26,8 @@ type Output interface {
 	Write(ctx context.Context, name string, data []byte) error
 }
 
-// validateName guards every Output against unsafe names (path traversal,
-// separators, absolute paths). It is applied centrally by the generator and may
-// be reused by custom outputs.
+// validateName rejects unsafe file names (path traversal, separators, absolute
+// paths). The generator applies it to every name before writing.
 func validateName(name string) error {
 	if name == "" {
 		return newErr(ErrOutput, "output", "file name is empty")

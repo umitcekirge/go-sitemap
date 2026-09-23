@@ -31,6 +31,7 @@ func main() {
 
 	gen, err := sitemap.New(sitemap.Options{
 		BaseURL:   "https://example.com",
+		Output:    sitemap.NewMemoryOutput(),
 		Notifiers: []sitemap.Notifier{notifier},
 	})
 	if err != nil {

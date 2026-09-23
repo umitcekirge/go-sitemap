@@ -72,8 +72,8 @@ if err != nil { /* handle */ }
 res, err := gen.Generate(context.Background(), pages)
 ```
 
-The zero value of `Options` is usable; only `BaseURL` (or `PublicURLPrefix`) is
-required. With no `Output`, generation writes to an in-memory store.
+Only `BaseURL` (or `PublicURLPrefix`) and `Output` are required (`Output` may
+be omitted on `DryRun`); everything else has a protocol-safe default.
 
 ## Providers
 
@@ -150,7 +150,7 @@ res, _ := gen.Generate(ctx, products, categories, pages)
 ## Gzip
 
 ```go
-gen, _ := sitemap.New(sitemap.Options{BaseURL: "https://example.com", Gzip: true})
+gen, _ := sitemap.New(sitemap.Options{BaseURL: "https://example.com", Output: out, Gzip: true})
 ```
 
 Files become `*.xml.gz`. Gzip is **off by default** and clearly documented.
@@ -163,12 +163,11 @@ the compressed output. `Result` reports both `UncompressedSize` and
 An index is generated automatically when more than one sitemap file is produced.
 
 ```go
-sitemap.Options{AlwaysIndex: true}  // force an index even for a single file
-sitemap.Options{DisableIndex: true} // suppress index — honoured only when ≤1 file
+sitemap.Options{AlwaysIndex: true} // force an index even for a single file
 ```
 
-`DisableIndex` is **ignored when multiple files exist**, because a multi-file set
-needs an index to be discoverable. Index file naming follows
+A multi-file set always gets an index, since it is the only way to discover
+the parts. Index file naming follows
 `IndexBaseName` (default `sitemap-index`; set to `sitemap` for the
 `sitemap.xml` strategy). Every URL inside the index is absolute.
 
@@ -220,6 +219,7 @@ notifier := &sitemap.IndexNowNotifier{
 }
 gen, _ := sitemap.New(sitemap.Options{
     BaseURL:   "https://example.com",
+    Output:    out,
     Notifiers: []sitemap.Notifier{notifier},
 })
 ```
@@ -249,7 +249,7 @@ All behaviour is configured through the `Options` struct. Highlights:
 | Output backend | `Output` |
 | Gzip | `Gzip` |
 | Split limits | `MaxURLsPerSitemap`, `MaxUncompressedBytes`, `AllowNonStandardLimits` |
-| Index | `AlwaysIndex`, `DisableIndex`, `IndexBaseName`, `IndexLastMod` |
+| Index | `AlwaysIndex`, `IndexBaseName`, `IndexLastMod` |
 | Validation | `Validation`, `SameHostOnly` |
 | Output formatting | `PrettyXML`, `LastModFormat` |
 | Opt-in defaults | `DefaultChangeFreq`, `DefaultPriority` |
@@ -267,7 +267,6 @@ All behaviour is configured through the `Options` struct. Highlights:
 | `AllowNonStandardLimits` | `false` | protocol limits are hard caps |
 | Index generation | automatic when >1 file | |
 | `AlwaysIndex` | `false` | |
-| `DisableIndex` | `false` | ignored when >1 file |
 | `IndexBaseName` | `sitemap-index` | |
 | `Validation` | `ModeStrict` | |
 | `Gzip` | `false` | documented; opt-in |
@@ -281,7 +280,7 @@ All behaviour is configured through the `Options` struct. Highlights:
 | IndexNow | disabled | opt-in |
 | File naming | provider-based, zero-padded | `sitemap-<prefix>-0001.xml` |
 | Context cancellation | always supported | |
-| Output (unset) | in-memory | set `FileOutput` for production |
+| `Output` | required | `FileOutput`, `MemoryOutput` or custom; optional on `DryRun` |
 
 Zero-value options are normalised to these defaults. Invalid explicit values
 return a wrapped `ErrInvalidOptions` from `New`.
@@ -408,7 +407,7 @@ number, URL count, uncompressed/compressed sizes and gzip flag. Each
 ## Dry run (CI/CD)
 
 ```go
-gen, _ := sitemap.New(sitemap.Options{BaseURL: "https://example.com", DryRun: true})
+gen, _ := sitemap.New(sitemap.Options{BaseURL: "https://example.com", DryRun: true}) // Output optional
 res, _ := gen.Generate(ctx, providers...)
 // Validates, counts, simulates splitting & file names/sizes. Writes nothing.
 ```

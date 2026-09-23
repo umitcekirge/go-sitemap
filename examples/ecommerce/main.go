@@ -53,6 +53,7 @@ func main() {
 
 	gen, err := sitemap.New(sitemap.Options{
 		BaseURL:           "https://shop.example.com",
+		Output:            sitemap.NewFileOutput("./public"),
 		Gzip:              true,
 		MaxURLsPerSitemap: 50000, // protocol default; lower it for debugging
 	})
