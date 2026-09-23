@@ -515,8 +515,9 @@ does); synchronous writes (as `FileOutput` does) are always safe.
 ## Versioning policy
 
 Semantic versioning. The public API is intentionally small (providers, entries,
-options, generator, output, notifiers, result). Breaking changes are reserved
-for major versions and documented in the changelog.
+options, generator, output, notifiers, result). Before v1.0.0, minor versions
+may contain breaking changes; every release and its breaking changes are listed
+in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
