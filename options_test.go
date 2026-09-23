@@ -1,9 +1,11 @@
 package sitemap
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -54,6 +56,7 @@ func TestInvalidOptions(t *testing.T) {
 		{"bad validation", Options{BaseURL: "https://e.com", Validation: ValidationMode(99)}},
 		{"bad default changefreq", Options{BaseURL: "https://e.com", DefaultChangeFreq: "occasionally"}},
 		{"bad default priority", Options{BaseURL: "https://e.com", DefaultPriority: ptrFloat(2)}},
+		{"NaN default priority", Options{BaseURL: "https://e.com", DefaultPriority: ptrFloat(math.NaN())}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,7 +126,7 @@ func TestValidationModes(t *testing.T) {
 }
 
 func TestPriorityValidation(t *testing.T) {
-	for _, p := range []float64{-0.1, 1.1, 2} {
+	for _, p := range []float64{-0.1, 1.1, 2, math.NaN()} {
 		e := Entry{Loc: "https://e.com/x", Priority: ptrFloat(p)}
 		if err := validateEntry(e, ""); !errors.Is(err, ErrInvalidEntry) {
 			t.Fatalf("priority %v should be invalid, got %v", p, err)
@@ -184,5 +187,21 @@ func TestTransformSkip(t *testing.T) {
 	}
 	if res.WrittenURLs != 1 || res.SkippedURLs != 1 {
 		t.Fatalf("transform skip: written=%d skipped=%d", res.WrittenURLs, res.SkippedURLs)
+	}
+}
+
+func TestPriorityKeepsPrecision(t *testing.T) {
+	data := genOne(t, Entry{Loc: "https://example.com/p", Priority: ptrFloat(0.85)})
+	if !bytes.Contains(data, []byte("<priority>0.85</priority>")) {
+		t.Fatalf("priority rounded:\n%s", data)
+	}
+}
+
+func TestInvalidUTF8TextRejected(t *testing.T) {
+	e := Entry{Loc: "https://e.com/x", Images: []Image{{Loc: "https://e.com/i.jpg", Title: "caf\xe9"}}}
+	err := validateEntry(e, "")
+	var se *Error
+	if !errors.Is(err, ErrInvalidEntry) || !errors.As(err, &se) || se.Field != "Image.Title" {
+		t.Fatalf("want ErrInvalidEntry on Image.Title, got %v", err)
 	}
 }

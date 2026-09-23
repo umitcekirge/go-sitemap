@@ -107,7 +107,7 @@ func (r *renderer) writeEntry(buf *bytes.Buffer, e Entry) {
 	if e.Priority != nil {
 		r.indent(buf, 2)
 		buf.WriteString("<priority>")
-		buf.Write(strconv.AppendFloat(buf.AvailableBuffer(), *e.Priority, 'f', 1, 64))
+		buf.Write(strconv.AppendFloat(buf.AvailableBuffer(), *e.Priority, 'f', -1, 64))
 		buf.WriteString("</priority>")
 		r.nl(buf)
 	}

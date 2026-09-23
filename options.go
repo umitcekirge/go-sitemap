@@ -3,6 +3,7 @@ package sitemap
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -214,7 +215,7 @@ func (o Options) normalize() (Options, error) {
 		return n, newErr(ErrInvalidOptions, "options", "DefaultChangeFreq is not an allowed changefreq value")
 	}
 	if n.DefaultPriority != nil {
-		if p := *n.DefaultPriority; p < 0 || p > 1 {
+		if p := *n.DefaultPriority; math.IsNaN(p) || p < 0 || p > 1 {
 			return n, newErr(ErrInvalidOptions, "options", "DefaultPriority must be within [0.0, 1.0]")
 		}
 	}

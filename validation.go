@@ -1,7 +1,9 @@
 package sitemap
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -67,7 +69,7 @@ func validateEntry(e Entry, host string) error {
 	locHost, err := hostOf(e.Loc)
 	if err != nil {
 		var se *Error
-		if asErr(err, &se) {
+		if errors.As(err, &se) {
 			se.Field = "Loc"
 		}
 		return err
@@ -78,7 +80,7 @@ func validateEntry(e Entry, host string) error {
 	}
 
 	if e.Priority != nil {
-		if p := *e.Priority; p < 0 || p > 1 {
+		if p := *e.Priority; math.IsNaN(p) || p < 0 || p > 1 {
 			return locErr(ErrInvalidEntry, "Priority", e.Loc,
 				fmt.Sprintf("priority %v is outside [0.0, 1.0]", p))
 		}
@@ -93,14 +95,21 @@ func validateEntry(e Entry, host string) error {
 		if a.HrefLang == "" {
 			return locErr(ErrInvalidEntry, "Alternate.HrefLang", e.Loc, "hreflang is empty")
 		}
+		if err := validText("Alternate.HrefLang", e.Loc, a.HrefLang); err != nil {
+			return err
+		}
 		if err := validateAbsoluteURL(a.Href); err != nil {
 			return locErr(ErrInvalidEntry, "Alternate.Href", e.Loc, "alternate href must be absolute")
 		}
 	}
 
 	for i := range e.Images {
-		if err := validateAbsoluteURL(e.Images[i].Loc); err != nil {
+		im := &e.Images[i]
+		if err := validateAbsoluteURL(im.Loc); err != nil {
 			return locErr(ErrInvalidEntry, "Image.Loc", e.Loc, "image loc must be absolute")
+		}
+		if err := validTexts(e.Loc, "Image.Title", im.Title, "Image.Caption", im.Caption, "Image.License", im.License); err != nil {
+			return err
 		}
 	}
 
@@ -146,7 +155,7 @@ func validateVideo(v *Video, loc string) error {
 	if v.hasDuration() && (v.Duration < 1 || v.Duration > 28800) {
 		return locErr(ErrInvalidEntry, "Video.Duration", loc, "video duration must be within 1..28800 seconds")
 	}
-	return nil
+	return validTexts(loc, "Video.Title", v.Title, "Video.Description", v.Description)
 }
 
 // validateNews checks required news fields.
@@ -163,27 +172,30 @@ func validateNews(n *News, loc string) error {
 	if strings.TrimSpace(n.Title) == "" {
 		return locErr(ErrInvalidEntry, "News.Title", loc, "news title is required")
 	}
+	return validTexts(loc, "News.PublicationName", n.PublicationName,
+		"News.PublicationLanguage", n.PublicationLanguage, "News.Title", n.Title)
+}
+
+// validText rejects invalid UTF-8, which escape would otherwise copy into the
+// output and make the whole file unparseable.
+func validText(field, loc, s string) error {
+	if !utf8.ValidString(s) {
+		return locErr(ErrInvalidEntry, field, loc, "value is not valid UTF-8")
+	}
+	return nil
+}
+
+// validTexts applies validText to alternating field/value pairs.
+func validTexts(loc string, pairs ...string) error {
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if err := validText(pairs[i], loc, pairs[i+1]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // locErr builds an *Error with field and loc context.
 func locErr(kind error, field, loc, msg string) *Error {
 	return &Error{Op: "validate", Field: field, Loc: loc, Msg: msg, kind: kind}
-}
-
-// asErr is a tiny errors.As helper for *Error.
-func asErr(err error, target **Error) bool {
-	for err != nil {
-		if e, ok := err.(*Error); ok {
-			*target = e
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }

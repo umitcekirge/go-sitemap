@@ -31,8 +31,6 @@ var (
 	ErrIndex = errors.New("sitemap: index generation failure")
 	// ErrNotify indicates a notification failure.
 	ErrNotify = errors.New("sitemap: notification failure")
-	// ErrValidation is returned in strict mode when an entry is invalid.
-	ErrValidation = errors.New("sitemap: validation error")
 )
 
 // Error is a structured error carrying the offending field/value context. It
