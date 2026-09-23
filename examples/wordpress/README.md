@@ -9,7 +9,7 @@ wp-sitemap.xml                        ← index
 wp-sitemap-posts-post-1.xml           ← posts
 wp-sitemap-posts-page-1.xml           ← pages
 wp-sitemap-taxonomies-category-1.xml  ← categories
-wp-sitemap-taxonomies-post_tag-1.xml  ← tags (if any)
+wp-sitemap-taxonomies-post-tag-1.xml  ← tags (if any; core uses post_tag)
 wp-sitemap-users-1.xml                ← authors
 ```
 
@@ -20,8 +20,9 @@ dependency-free; only this example depends on the MySQL driver.
 
 - Connects to MySQL with the credentials you pass on the command line (or a full
   `-dsn`); optionally reads them from a `wp-config.php` instead.
-- Reads the site URL (`home`) and `permalink_structure` from `wp_options`, so
-  it generates correct plain (`?p=123`) or pretty (`/slug/`) URLs automatically.
+- Reads the site URL (`home`), `permalink_structure`, category/tag bases and
+  front-page setting from `wp_options`, so it generates correct plain
+  (`?p=123`) or pretty (`/slug/`) URLs automatically.
 - Streams content from the database with **keyset pagination** (`WHERE id > ?
   ORDER BY id LIMIT n`), so it scales to very large sites with bounded memory.
 - One provider per content group: each public post type, each taxonomy, and
@@ -67,6 +68,7 @@ Flags:
 | `-gzip` | `false` | write `.xml.gz` |
 | `-per-file` | `2000` | max URLs per file (WordPress core uses 2000) |
 | `-base` | (from DB) | override the site base URL |
+| `-timeout` | `10m` | overall time limit (Ctrl-C also cancels cleanly) |
 
 The password can be supplied via the `WP_DB_PASSWORD` environment variable to
 keep it off the command line.
@@ -87,14 +89,23 @@ the `postTypes` slice in `main.go`. Internal types such as `wp_global_styles`,
 
 - **Plain** permalinks (`permalink_structure` empty) produce query URLs:
   `?p=ID`, `?page_id=ID`, `?cat=term_id`, `?tag=slug`, `?author=ID`.
-- **Pretty** permalinks are handled for the common `%postname%` style
-  (`/slug/`, `/category/slug/`, `/tag/slug/`, `/author/nicename/`). Date-based
-  structures (`/%year%/%monthnum%/%postname%/`) would need the post date woven
-  into the path; extend `site.postURL` if you use those.
+- **Pretty** permalinks support the tags `%year%`, `%monthnum%`, `%day%`,
+  `%hour%`, `%minute%`, `%second%`, `%postname%`, `%post_id%` and `%author%`.
+  A structure using `%category%` (or any other tag) is rejected at startup
+  rather than producing wrong URLs.
+- Pages use their full hierarchy (`/about/team/`); categories too
+  (`/category/parent/child/`), honouring `category_base` and `tag_base`. As in
+  core, the static part of the structure (e.g. `/blog/`) prefixes author URLs
+  and term URLs that use the default base.
+- The static front page is listed as the home URL. When the home page shows
+  the latest posts, the home URL is added to the pages sitemap, like core.
+- Files left over from a previous, larger run are removed automatically (see
+  the core README's *Stale-file cleanup*).
 
 ## How it maps to the core package
 
 - `FuncProvider` + keyset pagination → streaming, bounded memory.
-- `FilePrefix` per provider + a custom `FileNamer` → exact WordPress file names.
+- `FilePrefix` per provider + a custom `FileNamer` → WordPress-style file names
+  (`post_tag` becomes `post-tag`, since prefixes are sanitised).
 - `AlwaysIndex` + `IndexBaseName: "wp-sitemap"` → the `wp-sitemap.xml` index.
 - `Entry.LastMod` set only from real modification times → honest `lastmod`.

@@ -25,8 +25,9 @@
 //
 //	go run . -wp-config /path/to/wordpress/wp-config.php -out ./wp-sitemaps
 //
-// The site URL and permalink structure are always read from wp_options, so URLs
-// are correct without any extra configuration. The password may also be supplied
+// The site URL, permalink structure, category/tag bases and front-page setting
+// are read from wp_options, so URLs are correct without extra configuration.
+// Permalink structures using %category% are rejected rather than guessed. The password may also be supplied
 // via the WP_DB_PASSWORD environment variable to keep it off the command line.
 package main
 
@@ -37,7 +38,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +62,7 @@ func main() {
 		gzip     = flag.Bool("gzip", false, "gzip-compress output (.xml.gz)")
 		perFile  = flag.Int("per-file", 2000, "max URLs per sitemap file (WordPress core uses 2000)")
 		baseURL  = flag.String("base", "", "override the site base URL (default: WordPress 'home' option)")
+		timeout  = flag.Duration("timeout", 10*time.Minute, "overall time limit")
 	)
 	flag.Parse()
 
@@ -71,7 +76,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := run(dataSource, tablePrefix, *outDir, *baseURL, *perFile, *gzip); err != nil {
+	if err := run(dataSource, tablePrefix, *outDir, *baseURL, *perFile, *gzip, *timeout); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -103,8 +108,10 @@ func resolveDB(dsn, wpConfig, host, user, password, database, prefix string) (st
 	}
 }
 
-func run(dataSource, tablePrefix, outDir, baseOverride string, perFile int, gzip bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func run(dataSource, tablePrefix, outDir, baseOverride string, perFile int, gzip bool, timeout time.Duration) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	db, err := sql.Open("mysql", dataSource)
@@ -152,7 +159,6 @@ func run(dataSource, tablePrefix, outDir, baseOverride string, perFile int, gzip
 		AlwaysIndex:       true,         // WordPress always exposes wp-sitemap.xml
 		IndexBaseName:     "wp-sitemap", // index file name
 		FileNamer:         wpNamer{},    // WordPress-style file names
-		// post_modified_gmt is a meaningful change time, so allow lastmod.
 	})
 	if err != nil {
 		return err
@@ -173,6 +179,12 @@ func run(dataSource, tablePrefix, outDir, baseOverride string, perFile int, gzip
 		}
 		fmt.Printf("  provider %-22s kind=%-10s urls=%d skipped=%d\n", ps.Name, ps.Kind, ps.WrittenURLs, ps.SkippedURLs)
 	}
+	for _, name := range res.PrunedFiles {
+		fmt.Printf("  removed stale %s\n", name)
+	}
+	if res.PruneErr != nil {
+		log.Printf("stale file cleanup: %v", res.PruneErr)
+	}
 	fmt.Print("\nrobots.txt:\n", sitemap.RobotsSitemapLinesFromResult(res))
 	return nil
 }
@@ -180,43 +192,68 @@ func run(dataSource, tablePrefix, outDir, baseOverride string, perFile int, gzip
 // --- WordPress site model -------------------------------------------------
 
 type site struct {
-	home      string // no trailing slash
-	structure string // permalink_structure ("" => plain query URLs)
-	prefix    string // table prefix, e.g. "wp_"
+	home         string // no trailing slash
+	structure    string // permalink_structure ("" => plain query URLs)
+	prefix       string // table prefix, e.g. "wp_"
+	catBase      string // custom category_base, "" for the default
+	tagBase      string // custom tag_base, "" for the default
+	postsOnFront bool   // show_on_front = "posts": the home page lists posts
+	frontPageID  int64  // page_on_front when a static page is the home page
 }
 
+// Permalink tags this example can resolve. %category% needs WordPress's
+// primary-category logic, so it is rejected rather than guessed.
+var supportedTags = map[string]bool{
+	"%year%": true, "%monthnum%": true, "%day%": true, "%hour%": true, "%minute%": true,
+	"%second%": true, "%postname%": true, "%post_id%": true, "%author%": true,
+}
+
+var reTag = regexp.MustCompile(`%[a-z_]+%`)
+
 func loadSite(ctx context.Context, db *sql.DB, prefix string) (*site, error) {
-	rows, err := db.QueryContext(ctx,
-		fmt.Sprintf("SELECT option_name, option_value FROM %soptions WHERE option_name IN ('home','siteurl','permalink_structure')", prefix))
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT option_name, option_value FROM %soptions WHERE option_name IN "+
+			"('home','siteurl','permalink_structure','category_base','tag_base','show_on_front','page_on_front')", prefix))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	s := &site{prefix: prefix}
-	var siteurl string
+	opts := map[string]string{}
 	for rows.Next() {
 		var name, val string
 		if err := rows.Scan(&name, &val); err != nil {
 			return nil, err
 		}
-		switch name {
-		case "home":
-			s.home = strings.TrimRight(val, "/")
-		case "siteurl":
-			siteurl = strings.TrimRight(val, "/")
-		case "permalink_structure":
-			s.structure = val
-		}
+		opts[name] = val
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	s := &site{
+		prefix:    prefix,
+		home:      strings.TrimRight(opts["home"], "/"),
+		structure: opts["permalink_structure"],
+		catBase:   strings.Trim(opts["category_base"], "/"),
+		tagBase:   strings.Trim(opts["tag_base"], "/"),
+	}
 	if s.home == "" {
-		s.home = siteurl
+		s.home = strings.TrimRight(opts["siteurl"], "/")
 	}
 	if s.home == "" {
 		return nil, fmt.Errorf("could not determine site home URL")
+	}
+	switch opts["show_on_front"] {
+	case "page":
+		s.frontPageID, _ = strconv.ParseInt(opts["page_on_front"], 10, 64)
+	default:
+		s.postsOnFront = true
+	}
+	for _, tag := range reTag.FindAllString(s.structure, -1) {
+		if !supportedTags[tag] {
+			return nil, fmt.Errorf("permalink tag %s in %q is not supported by this example", tag, s.structure)
+		}
 	}
 	return s, nil
 }
@@ -224,33 +261,88 @@ func loadSite(ctx context.Context, db *sql.DB, prefix string) (*site, error) {
 // pretty reports whether the install uses pretty permalinks.
 func (s *site) pretty() bool { return s.structure != "" }
 
-// postURL builds the permalink for a post/page. For pretty permalinks it
-// assumes a %postname% style structure (the most common); date-based structures
-// would need the post date woven in.
-func (s *site) postURL(postType, name string, id int64) string {
-	if s.pretty() {
-		return s.home + "/" + name + "/"
+// slash mirrors user_trailingslashit: URLs end in "/" when the structure does.
+func (s *site) slash(p string) string {
+	if strings.HasSuffix(s.structure, "/") {
+		return p + "/"
+	}
+	return p
+}
+
+// front is the static part of the structure before the first tag (e.g.
+// "/blog/"), which WordPress prepends to term and author URLs.
+func (s *site) front() string {
+	f := s.structure
+	if i := strings.IndexByte(f, '%'); i >= 0 {
+		f = f[:i]
+	}
+	return "/" + strings.Trim(f, "/") + "/"
+}
+
+// index reports PATHINFO permalinks ("/index.php/...").
+func (s *site) index() bool { return strings.HasPrefix(s.structure, "/index.php/") }
+
+// root is the prefix pages carry: "/index.php/" for PATHINFO permalinks.
+func (s *site) root() string {
+	if s.index() {
+		return "/index.php/"
+	}
+	return "/"
+}
+
+type postRow struct {
+	id, parent int64
+	name       string
+	date       time.Time // post_date, local site time as used in permalinks
+	author     string
+}
+
+func (s *site) postURL(postType string, p postRow, pagePath func(int64) string) string {
+	if p.id == s.frontPageID {
+		return s.home + "/"
+	}
+	if !s.pretty() {
+		switch postType {
+		case "page":
+			return fmt.Sprintf("%s/?page_id=%d", s.home, p.id)
+		case "post":
+			return fmt.Sprintf("%s/?p=%d", s.home, p.id)
+		default:
+			return fmt.Sprintf("%s/?post_type=%s&p=%d", s.home, postType, p.id)
+		}
 	}
 	switch postType {
 	case "page":
-		return fmt.Sprintf("%s/?page_id=%d", s.home, id)
+		return s.home + s.root() + s.slash(pagePath(p.id))
 	case "post":
-		return fmt.Sprintf("%s/?p=%d", s.home, id)
+		return s.home + strings.NewReplacer(
+			"%year%", p.date.Format("2006"), "%monthnum%", p.date.Format("01"), "%day%", p.date.Format("02"),
+			"%hour%", p.date.Format("15"), "%minute%", p.date.Format("04"), "%second%", p.date.Format("05"),
+			"%postname%", p.name, "%post_id%", strconv.FormatInt(p.id, 10), "%author%", p.author,
+		).Replace(s.structure)
 	default:
-		return fmt.Sprintf("%s/?post_type=%s&p=%d", s.home, postType, id)
+		return s.home + s.front() + postType + "/" + s.slash(p.name)
 	}
 }
 
-func (s *site) termURL(taxonomy, slug string, termID int64) string {
+func (s *site) termURL(taxonomy, path, slug string, termID int64) string {
 	if s.pretty() {
+		base, custom := taxonomy, ""
 		switch taxonomy {
 		case "category":
-			return s.home + "/category/" + slug + "/"
+			base, custom = "category", s.catBase
 		case "post_tag":
-			return s.home + "/tag/" + slug + "/"
-		default:
-			return s.home + "/" + taxonomy + "/" + slug + "/"
+			base, custom = "tag", s.tagBase
 		}
+		// Core drops the front for a custom base, except with PATHINFO.
+		prefix := s.front()
+		if custom != "" {
+			base = custom
+			if !s.index() {
+				prefix = "/"
+			}
+		}
+		return s.home + prefix + base + "/" + s.slash(path)
 	}
 	switch taxonomy {
 	case "category":
@@ -264,57 +356,123 @@ func (s *site) termURL(taxonomy, slug string, termID int64) string {
 
 func (s *site) authorURL(id int64, nicename string) string {
 	if s.pretty() {
-		return s.home + "/author/" + nicename + "/"
+		return s.home + s.front() + "author/" + s.slash(nicename)
 	}
 	return fmt.Sprintf("%s/?author=%d", s.home, id)
 }
 
 // --- Providers (keyset-paginated streaming) -------------------------------
 
+// streamKeyset runs query in keyset-paginated batches; its last two
+// placeholders receive the last seen ID and the batch size. scan handles one
+// row and returns its ID.
+func streamKeyset(ctx context.Context, db *sql.DB, query string, args []any, scan func(*sql.Rows) (int64, error)) error {
+	const batch = 1000
+	var lastID int64
+	for {
+		rows, err := db.QueryContext(ctx, query, append(args[:len(args):len(args)], lastID, batch)...)
+		if err != nil {
+			return err
+		}
+		n := 0
+		for rows.Next() {
+			id, err := scan(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			lastID, n = id, n+1
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil || n < batch {
+			return err
+		}
+	}
+}
+
+// hierarchy maps an ID to its parent and slug, for building nested paths.
+type hierarchy map[int64]struct {
+	parent int64
+	slug   string
+}
+
+// path joins the slugs from the root down to id, e.g. "about/team".
+func (h hierarchy) path(id int64) string {
+	var parts []string
+	for depth := 0; id != 0 && depth < 100; depth++ {
+		n, ok := h[id]
+		if !ok {
+			break
+		}
+		parts = append(parts, n.slug)
+		id = n.parent
+	}
+	slices.Reverse(parts)
+	return strings.Join(parts, "/")
+}
+
+func loadHierarchy(ctx context.Context, db *sql.DB, query string, args ...any) (hierarchy, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	h := hierarchy{}
+	for rows.Next() {
+		var id, parent int64
+		var slug string
+		if err := rows.Scan(&id, &parent, &slug); err != nil {
+			return nil, err
+		}
+		h[id] = struct {
+			parent int64
+			slug   string
+		}{parent, slug}
+	}
+	return h, rows.Err()
+}
+
 func postTypeProvider(db *sql.DB, s *site, prefix, postType, kind string) sitemap.Provider {
 	query := fmt.Sprintf(
-		"SELECT ID, post_name, post_modified_gmt FROM %sposts "+
-			"WHERE post_type=? AND post_status='publish' AND post_password='' AND ID>? "+
-			"ORDER BY ID ASC LIMIT ?", s.prefix)
+		"SELECT p.ID, p.post_parent, p.post_name, p.post_date, p.post_modified_gmt, COALESCE(u.user_nicename, '') "+
+			"FROM %sposts p LEFT JOIN %susers u ON u.ID=p.post_author "+
+			"WHERE p.post_type=? AND p.post_status='publish' AND p.post_password='' AND p.ID>? "+
+			"ORDER BY p.ID ASC LIMIT ?", s.prefix, s.prefix)
 	return &sitemap.FuncProvider{
 		ProviderName: prefix,
 		FilePrefix:   prefix,
 		EntityKind:   sitemap.Kind(kind),
 		StreamFunc: func(ctx context.Context, yield func(sitemap.Entry) error) error {
-			const batch = 1000
-			var lastID int64
-			for {
-				rows, err := db.QueryContext(ctx, query, postType, lastID, batch)
+			pages := hierarchy{}
+			if postType == "page" {
+				// Ancestors count regardless of their status, as in get_page_uri.
+				var err error
+				pages, err = loadHierarchy(ctx, db, fmt.Sprintf(
+					"SELECT ID, post_parent, post_name FROM %sposts WHERE post_type='page'", s.prefix))
 				if err != nil {
 					return err
 				}
-				n := 0
-				for rows.Next() {
-					var id int64
-					var name, modified string
-					if err := rows.Scan(&id, &name, &modified); err != nil {
-						rows.Close()
+				// Like core, list the home page when it shows the latest posts.
+				if s.postsOnFront {
+					if err := yield(sitemap.Entry{Loc: s.home + "/"}); err != nil {
 						return err
 					}
-					lastID, n = id, n+1
-					e := sitemap.Entry{Loc: s.postURL(postType, name, id)}
-					if t, ok := parseWPTime(modified); ok {
-						e.LastMod = &t
-					}
-					if err := yield(e); err != nil {
-						rows.Close()
-						return err
-					}
-				}
-				if err := rows.Err(); err != nil {
-					rows.Close()
-					return err
-				}
-				rows.Close()
-				if n < batch {
-					return nil
 				}
 			}
+			return streamKeyset(ctx, db, query, []any{postType}, func(rows *sql.Rows) (int64, error) {
+				var p postRow
+				var date, modified string
+				if err := rows.Scan(&p.id, &p.parent, &p.name, &date, &modified, &p.author); err != nil {
+					return 0, err
+				}
+				p.date, _ = parseWPTime(date)
+				e := sitemap.Entry{Loc: s.postURL(postType, p, pages.path)}
+				if t, ok := parseWPTime(modified); ok {
+					e.LastMod = &t
+				}
+				return p.id, yield(e)
+			})
 		},
 	}
 }
@@ -330,36 +488,28 @@ func termProvider(db *sql.DB, s *site, prefix, taxonomy string) sitemap.Provider
 		FilePrefix:   prefix,
 		EntityKind:   sitemap.KindCategory,
 		StreamFunc: func(ctx context.Context, yield func(sitemap.Entry) error) error {
-			const batch = 1000
-			var lastID int64
-			for {
-				rows, err := db.QueryContext(ctx, query, taxonomy, lastID, batch)
+			terms := hierarchy{}
+			if taxonomy == "category" {
+				var err error
+				terms, err = loadHierarchy(ctx, db, fmt.Sprintf(
+					"SELECT t.term_id, tt.parent, t.slug FROM %sterms t "+
+						"JOIN %sterm_taxonomy tt ON t.term_id=tt.term_id WHERE tt.taxonomy=?", s.prefix, s.prefix), taxonomy)
 				if err != nil {
 					return err
 				}
-				n := 0
-				for rows.Next() {
-					var id int64
-					var slug string
-					if err := rows.Scan(&id, &slug); err != nil {
-						rows.Close()
-						return err
-					}
-					lastID, n = id, n+1
-					if err := yield(sitemap.Entry{Loc: s.termURL(taxonomy, slug, id)}); err != nil {
-						rows.Close()
-						return err
-					}
-				}
-				if err := rows.Err(); err != nil {
-					rows.Close()
-					return err
-				}
-				rows.Close()
-				if n < batch {
-					return nil
-				}
 			}
+			return streamKeyset(ctx, db, query, []any{taxonomy}, func(rows *sql.Rows) (int64, error) {
+				var id int64
+				var slug string
+				if err := rows.Scan(&id, &slug); err != nil {
+					return 0, err
+				}
+				path := slug
+				if p := terms.path(id); p != "" {
+					path = p
+				}
+				return id, yield(sitemap.Entry{Loc: s.termURL(taxonomy, path, slug, id)})
+			})
 		},
 	}
 }
@@ -375,36 +525,14 @@ func authorProvider(db *sql.DB, s *site) sitemap.Provider {
 		FilePrefix:   "users",
 		EntityKind:   sitemap.Kind("author"),
 		StreamFunc: func(ctx context.Context, yield func(sitemap.Entry) error) error {
-			const batch = 1000
-			var lastID int64
-			for {
-				rows, err := db.QueryContext(ctx, query, lastID, batch)
-				if err != nil {
-					return err
+			return streamKeyset(ctx, db, query, nil, func(rows *sql.Rows) (int64, error) {
+				var id int64
+				var nicename string
+				if err := rows.Scan(&id, &nicename); err != nil {
+					return 0, err
 				}
-				n := 0
-				for rows.Next() {
-					var id int64
-					var nicename string
-					if err := rows.Scan(&id, &nicename); err != nil {
-						rows.Close()
-						return err
-					}
-					lastID, n = id, n+1
-					if err := yield(sitemap.Entry{Loc: s.authorURL(id, nicename)}); err != nil {
-						rows.Close()
-						return err
-					}
-				}
-				if err := rows.Err(); err != nil {
-					rows.Close()
-					return err
-				}
-				rows.Close()
-				if n < batch {
-					return nil
-				}
-			}
+				return id, yield(sitemap.Entry{Loc: s.authorURL(id, nicename)})
+			})
 		},
 	}
 }
